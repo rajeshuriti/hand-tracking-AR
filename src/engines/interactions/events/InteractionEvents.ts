@@ -34,3 +34,34 @@ export interface ObjectCreatedPayload {
 export interface ObjectDestroyedPayload {
   objectId: string;
 }
+
+export interface GrabStartedPayload {
+  objectId: string;
+  handedness: Handedness;
+  position: [number, number, number];
+  rotation: [number, number, number];
+}
+
+export interface GrabUpdatedPayload {
+  objectId: string;
+  handedness: Handedness;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  velocity: [number, number, number];
+}
+
+export interface GrabEndedPayload {
+  objectId: string;
+  handedness: Handedness;
+  finalPosition: [number, number, number];
+  finalRotation: [number, number, number];
+  velocity: [number, number, number];
+  durationMs: number;
+}
+
+export interface GrabTransferredPayload {
+  objectId: string;
+  fromHand: Handedness;
+  toHand: Handedness;
+  position: [number, number, number];
+}

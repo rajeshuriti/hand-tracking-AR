@@ -1,5 +1,7 @@
 import { ObjectManager } from '../managers/ObjectManager';
 import { SelectionManager } from '../managers/SelectionManager';
+import { GrabManager } from '../managers/GrabManager';
+import type { GrabConfig } from '../managers/GrabManager';
 import {
   InteractionState,
   DEFAULT_INTERACTION_CONFIG,
@@ -8,31 +10,32 @@ import type { InteractionConfig, InteractionCursor } from '../events/Interaction
 import type { GestureResult } from '../../../types/gestures';
 import { GestureType, GestureState } from '../../../types/gestures';
 import { HandLandmark } from '../../../types/hand';
-import type { HandData } from '../../../types/hand';
+import type { HandData, Landmark } from '../../../types/hand';
+import { computeHandRotation } from '../../gestures/math';
 import { eventBus } from '../../../services/EventBus';
-
-interface GrabState {
-  objectId: string;
-  grabOffset: [number, number, number];
-  lastPosition: [number, number, number];
-}
 
 export class HandInteractionController {
   private objectManager: ObjectManager;
   private selectionManager: SelectionManager;
+  private grabManager: GrabManager;
   private config: InteractionConfig;
   private state: InteractionState = InteractionState.IDLE;
-  private grabState: GrabState | null = null;
   private smoothedCursor: [number, number, number] = [0, 0, 0];
+  private lastHandRotation: [number, number, number] = [0, 0, 0];
 
   constructor(
     objectManager: ObjectManager,
     selectionManager: SelectionManager,
     config: Partial<InteractionConfig> = {},
+    grabConfig: Partial<GrabConfig> = {},
   ) {
     this.objectManager = objectManager;
     this.selectionManager = selectionManager;
     this.config = { ...DEFAULT_INTERACTION_CONFIG, ...config };
+    this.grabManager = new GrabManager({
+      maxGrabDistance: this.config.maxInteractionDistance,
+      ...grabConfig,
+    });
   }
 
   processGesture(gesture: GestureResult, hand: HandData | undefined): void {
@@ -42,6 +45,7 @@ export class HandInteractionController {
     if (!cursor) return;
 
     this.smoothCursor(cursor);
+    this.lastHandRotation = computeHandRotation(hand.landmarks);
 
     if (gesture.type === GestureType.PINCH) {
       this.handlePinch(gesture, cursor);
@@ -50,12 +54,42 @@ export class HandInteractionController {
     }
   }
 
-  private handlePinch(gesture: GestureResult, cursor: InteractionCursor): void {
+  processSecondHand(gesture: GestureResult, hand: HandData | undefined): void {
+    if (!hand || !this.grabManager.isGrabbing()) return;
+    if (gesture.type !== GestureType.PINCH) return;
+    if (this.grabManager.getHandedness() === hand.handedness) return;
+
     if (gesture.state === GestureState.START) {
+      const cursor = this.getCursorPosition(hand);
+      if (!cursor) return;
+
+      const grabbedId = this.grabManager.getGrabbedObjectId();
+      if (!grabbedId) return;
+
+      const obj = this.objectManager.getById(grabbedId);
+      if (!obj) return;
+
+      const handRot = computeHandRotation(hand.landmarks);
+      this.grabManager.transferToHand(
+        hand.handedness,
+        [cursor.x, cursor.y, cursor.z],
+        handRot,
+        obj,
+      );
+    }
+  }
+
+  private handlePinch(gesture: GestureResult, cursor: InteractionCursor): void {
+    if (gesture.state === GestureState.START && this.state !== InteractionState.GRABBING) {
       this.onPinchStart(cursor);
-    } else if (gesture.state === GestureState.HOLD) {
+    }
+    if (
+      (gesture.state === GestureState.START || gesture.state === GestureState.HOLD) &&
+      this.state === InteractionState.GRABBING
+    ) {
       this.onPinchHold();
-    } else if (gesture.state === GestureState.END) {
+    }
+    if (gesture.state === GestureState.END) {
       this.onPinchEnd();
     }
   }
@@ -81,15 +115,12 @@ export class HandInteractionController {
 
     if (nearest) {
       this.selectionManager.selectObject(nearest, cursor.handedness);
-      this.grabState = {
-        objectId: nearest.id,
-        grabOffset: [
-          nearest.position[0] - this.smoothedCursor[0],
-          nearest.position[1] - this.smoothedCursor[1],
-          nearest.position[2] - this.smoothedCursor[2],
-        ],
-        lastPosition: [...nearest.position],
-      };
+      this.grabManager.grab(
+        nearest,
+        this.smoothedCursor,
+        this.lastHandRotation,
+        cursor.handedness,
+      );
       this.state = InteractionState.GRABBING;
     } else {
       this.state = InteractionState.SELECTING;
@@ -97,41 +128,48 @@ export class HandInteractionController {
   }
 
   private onPinchHold(): void {
-    if (this.state !== InteractionState.GRABBING || !this.grabState) return;
+    if (this.state !== InteractionState.GRABBING || !this.grabManager.isGrabbing()) return;
 
-    const obj = this.objectManager.getById(this.grabState.objectId);
-    if (!obj) {
-      this.grabState = null;
+    const grabbedId = this.grabManager.getGrabbedObjectId();
+    if (!grabbedId) {
       this.state = InteractionState.IDLE;
       return;
     }
 
-    const targetX = this.smoothedCursor[0] + this.grabState.grabOffset[0];
-    const targetY = this.smoothedCursor[1] + this.grabState.grabOffset[1];
-    const targetZ = this.smoothedCursor[2] + this.grabState.grabOffset[2];
+    const obj = this.objectManager.getById(grabbedId);
+    if (!obj) {
+      this.grabManager.release(null);
+      this.state = InteractionState.IDLE;
+      return;
+    }
 
-    const lerpedX = this.lerp(obj.position[0], targetX, this.config.lerpSpeed);
-    const lerpedY = this.lerp(obj.position[1], targetY, this.config.lerpSpeed);
-    const lerpedZ = this.lerp(obj.position[2], targetZ, this.config.lerpSpeed);
+    const result = this.grabManager.updateGrab(
+      this.smoothedCursor,
+      this.lastHandRotation,
+      obj,
+    );
 
-    const newPos: [number, number, number] = [lerpedX, lerpedY, lerpedZ];
-    obj.move(newPos);
-    this.grabState.lastPosition = newPos;
+    if (result) {
+      obj.move(result.position);
+      obj.rotate(result.rotation);
 
-    eventBus.emit('interaction:object:moved', {
-      objectId: obj.id,
-      transform: {
-        position: newPos,
-        rotation: obj.rotation,
-        scale: obj.scale,
-      },
-    });
+      eventBus.emit('interaction:object:moved', {
+        objectId: obj.id,
+        transform: {
+          position: result.position,
+          rotation: result.rotation,
+          scale: obj.scale,
+        },
+      });
+    }
   }
 
   private onPinchEnd(): void {
-    if (this.state === InteractionState.GRABBING) {
+    if (this.state === InteractionState.GRABBING && this.grabManager.isGrabbing()) {
+      const grabbedId = this.grabManager.getGrabbedObjectId();
+      const obj = grabbedId ? this.objectManager.getById(grabbedId) : null;
+      this.grabManager.release(obj ?? null);
       this.selectionManager.releaseObject();
-      this.grabState = null;
     }
     this.state = InteractionState.IDLE;
   }
@@ -157,16 +195,23 @@ export class HandInteractionController {
     }
   }
 
+  private landmarkToWorld(lm: Landmark): { x: number; y: number; z: number } {
+    const s = this.config.worldScale;
+    return {
+      x: (lm.x - 0.5) * s,
+      y: -(lm.y - 0.5) * s,
+      z: -lm.z * s,
+    };
+  }
+
   private getCursorPosition(hand: HandData): InteractionCursor | null {
     if (this.config.cursorMode === 'index_tip') {
-      const tip = hand.landmarks[HandLandmark.INDEX_FINGER_TIP];
-      if (!tip) return null;
+      const tip = this.landmarkToWorld(hand.landmarks[HandLandmark.INDEX_FINGER_TIP]);
       return { x: tip.x, y: tip.y, z: tip.z, handedness: hand.handedness };
     }
 
-    const thumb = hand.landmarks[HandLandmark.THUMB_TIP];
-    const index = hand.landmarks[HandLandmark.INDEX_FINGER_TIP];
-    if (!thumb || !index) return null;
+    const thumb = this.landmarkToWorld(hand.landmarks[HandLandmark.THUMB_TIP]);
+    const index = this.landmarkToWorld(hand.landmarks[HandLandmark.INDEX_FINGER_TIP]);
 
     return {
       x: (thumb.x + index.x) / 2,
@@ -178,13 +223,9 @@ export class HandInteractionController {
 
   private smoothCursor(cursor: InteractionCursor): void {
     const alpha = 0.3;
-    this.smoothedCursor[0] = this.lerp(this.smoothedCursor[0], cursor.x, alpha);
-    this.smoothedCursor[1] = this.lerp(this.smoothedCursor[1], cursor.y, alpha);
-    this.smoothedCursor[2] = this.lerp(this.smoothedCursor[2], cursor.z, alpha);
-  }
-
-  private lerp(a: number, b: number, t: number): number {
-    return a + (b - a) * t;
+    this.smoothedCursor[0] += (cursor.x - this.smoothedCursor[0]) * alpha;
+    this.smoothedCursor[1] += (cursor.y - this.smoothedCursor[1]) * alpha;
+    this.smoothedCursor[2] += (cursor.z - this.smoothedCursor[2]) * alpha;
   }
 
   getState(): InteractionState {
@@ -195,14 +236,19 @@ export class HandInteractionController {
     return [...this.smoothedCursor] as [number, number, number];
   }
 
-  getGrabState(): GrabState | null {
-    return this.grabState;
+  getGrabManager(): GrabManager {
+    return this.grabManager;
+  }
+
+  getHandRotation(): [number, number, number] {
+    return [...this.lastHandRotation] as [number, number, number];
   }
 
   reset(): void {
     this.selectionManager.clearSelection();
-    this.grabState = null;
+    this.grabManager.reset();
     this.state = InteractionState.IDLE;
     this.smoothedCursor = [0, 0, 0];
+    this.lastHandRotation = [0, 0, 0];
   }
 }

@@ -1,5 +1,6 @@
 import { useInteractionStore } from '../stores/interactionStore';
 import { useGestureStore } from '../stores/gestureStore';
+import { useHandTrackingStore } from '../stores/handTrackingStore';
 
 const styles = {
   row: {
@@ -10,17 +11,6 @@ const styles = {
   },
   label: { color: '#888' },
   value: { color: '#fff' },
-  stateIdle: { color: '#666' },
-  stateHover: { color: '#88bbff' },
-  stateSelect: { color: '#ffcc00' },
-  stateGrab: { color: '#ff6b6b' },
-};
-
-const stateColors: Record<string, React.CSSProperties> = {
-  IDLE: styles.stateIdle,
-  HOVERING: styles.stateHover,
-  SELECTING: styles.stateSelect,
-  GRABBING: styles.stateGrab,
 };
 
 function formatPos(pos: [number, number, number]): string {
@@ -28,42 +18,29 @@ function formatPos(pos: [number, number, number]): string {
 }
 
 export function InteractionDebugView() {
-  const hoveredObjectId = useInteractionStore((s) => s.hoveredObjectId);
-  const selectedObjectId = useInteractionStore((s) => s.selectedObjectId);
-  const objectCount = useInteractionStore((s) => s.objectCount);
-  const interactionState = useInteractionStore((s) => s.interactionState);
+  const isGrabbed = useInteractionStore((s) => s.isGrabbed);
   const cursorPos = useInteractionStore((s) => s.cursorPosition);
+  const handsCount = useHandTrackingStore((s) => s.hands.length);
 
   const rightGesture = useGestureStore((s) => s.rightGesture);
   const leftGesture = useGestureStore((s) => s.leftGesture);
-
   const activeGesture = rightGesture.type !== 'NONE' ? rightGesture : leftGesture;
+
+  const dist = Math.sqrt(cursorPos[0] ** 2 + cursorPos[1] ** 2).toFixed(2);
 
   return (
     <>
       <div style={styles.row}>
-        <span style={styles.label}>State</span>
-        <span style={stateColors[interactionState] ?? styles.value}>
-          {interactionState}
+        <span style={styles.label}>Sphere</span>
+        <span style={{ color: isGrabbed ? '#44dd88' : '#4488ff' }}>
+          {isGrabbed ? 'GRABBED' : 'IDLE'}
         </span>
       </div>
 
       <div style={styles.row}>
-        <span style={styles.label}>Objects</span>
-        <span style={styles.value}>{objectCount}</span>
-      </div>
-
-      <div style={styles.row}>
-        <span style={styles.label}>Hovered</span>
-        <span style={hoveredObjectId ? styles.stateHover : styles.stateIdle}>
-          {hoveredObjectId ?? '—'}
-        </span>
-      </div>
-
-      <div style={styles.row}>
-        <span style={styles.label}>Selected</span>
-        <span style={selectedObjectId ? styles.stateSelect : styles.stateIdle}>
-          {selectedObjectId ?? '—'}
+        <span style={styles.label}>Hands</span>
+        <span style={{ color: handsCount > 0 ? '#51cf66' : '#666' }}>
+          {handsCount}
         </span>
       </div>
 
@@ -79,6 +56,13 @@ export function InteractionDebugView() {
       <div style={styles.row}>
         <span style={styles.label}>Cursor</span>
         <span style={{ color: '#aaa', fontSize: 10 }}>{formatPos(cursorPos)}</span>
+      </div>
+
+      <div style={styles.row}>
+        <span style={styles.label}>Dist to sphere</span>
+        <span style={{ color: Number(dist) < 1.0 ? '#51cf66' : '#ff6b6b', fontSize: 10 }}>
+          {dist}
+        </span>
       </div>
     </>
   );

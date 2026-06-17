@@ -14,13 +14,15 @@ export interface InteractionConfig {
   lerpSpeed: number;
   hoverScaleMultiplier: number;
   cursorMode: 'index_tip' | 'pinch_midpoint';
+  worldScale: number;
 }
 
 export const DEFAULT_INTERACTION_CONFIG: InteractionConfig = {
-  maxInteractionDistance: 0.3,
+  maxInteractionDistance: 0.8,
   lerpSpeed: 0.15,
   hoverScaleMultiplier: 1.08,
   cursorMode: 'pinch_midpoint',
+  worldScale: 5,
 };
 
 export interface InteractionCursor {

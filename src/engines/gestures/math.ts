@@ -37,6 +37,52 @@ export interface FingerState {
   extension: number;
 }
 
+export function computeHandRotation(landmarks: Landmark[]): [number, number, number] {
+  const wrist = landmarks[HandLandmark.WRIST];
+  const indexMcp = landmarks[HandLandmark.INDEX_FINGER_MCP];
+  const middleMcp = landmarks[HandLandmark.MIDDLE_FINGER_MCP];
+  const pinkyMcp = landmarks[HandLandmark.PINKY_MCP];
+
+  // MediaPipe → 3D: Y flipped (down→up), Z flipped (away→toward)
+  let fx = middleMcp.x - wrist.x;
+  let fy = -(middleMcp.y - wrist.y);
+  let fz = -(middleMcp.z - wrist.z);
+  const fLen = Math.sqrt(fx * fx + fy * fy + fz * fz);
+  if (fLen < 1e-6) return [0, 0, 0];
+  fx /= fLen; fy /= fLen; fz /= fLen;
+
+  let sx = pinkyMcp.x - indexMcp.x;
+  let sy = -(pinkyMcp.y - indexMcp.y);
+  let sz = -(pinkyMcp.z - indexMcp.z);
+  const sLen = Math.sqrt(sx * sx + sy * sy + sz * sz);
+  if (sLen < 1e-6) return [0, 0, 0];
+  sx /= sLen; sy /= sLen; sz /= sLen;
+
+  let ux = fy * sz - fz * sy;
+  let uy = fz * sx - fx * sz;
+  let uz = fx * sy - fy * sx;
+  const uLen = Math.sqrt(ux * ux + uy * uy + uz * uz);
+  if (uLen < 1e-6) return [0, 0, 0];
+  ux /= uLen; uy /= uLen; uz /= uLen;
+
+  const rx = uy * fz - uz * fy;
+
+  const clampedFx = Math.max(-1, Math.min(1, fx));
+  const rotY = Math.asin(clampedFx);
+
+  let rotX: number;
+  let rotZ: number;
+  if (Math.abs(clampedFx) < 0.9999) {
+    rotX = Math.atan2(-fy, fz);
+    rotZ = Math.atan2(-ux, rx);
+  } else {
+    rotX = Math.atan2(uz, uy);
+    rotZ = 0;
+  }
+
+  return [rotX, rotY, rotZ];
+}
+
 export function analyzeFingers(landmarks: Landmark[]): {
   index: FingerState;
   middle: FingerState;

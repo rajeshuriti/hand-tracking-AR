@@ -1,167 +1,155 @@
+import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Physics } from '@react-three/rapier';
-import type { RapierRigidBody } from '@react-three/rapier';
-import { useObjectInteraction } from '../hooks/useObjectInteraction';
-import { useObjectSpawner } from './ObjectSpawner';
-import type { InteractiveObject3D } from './InteractiveObject3D';
-import { PhysicsCube, PhysicsSphere, PhysicsGround } from '../../physics';
-import { usePhysics } from '../../physics/hooks/usePhysics';
-import { useGrabPhysics } from '../../physics/hooks/useGrabPhysics';
-import { usePhysicsStore } from '../../physics/stores/PhysicsStore';
-import { useInteractionStore } from '../../../stores/interactionStore';
-import { useGestureStore } from '../../../stores/gestureStore';
+import * as THREE from 'three';
 import { useHandTrackingStore } from '../../../stores/handTrackingStore';
+import { useGestureStore } from '../../../stores/gestureStore';
+import { useInteractionStore } from '../../../stores/interactionStore';
 import { GestureType, GestureState } from '../../../types/gestures';
 import { HandLandmark } from '../../../types/hand';
-import { useRef, useEffect, useCallback, createContext, useContext, useMemo } from 'react';
 
-interface InteractionAPI {
-  spawnCube: (pos?: [number, number, number]) => InteractiveObject3D;
-  spawnSphere: (pos?: [number, number, number]) => InteractiveObject3D;
-  spawnRandom: (pos?: [number, number, number]) => InteractiveObject3D;
-  removeObject: (id: string) => void;
-  objectCount: number;
+const SPHERE_RADIUS = 0.15;
+const GRAB_DISTANCE = 1.0;
+const LERP_SPEED = 0.25;
+const WORLD_SCALE = 3;
+
+function landmarkToWorld(x: number, y: number, z: number): [number, number, number] {
+  return [
+    (x - 0.5) * WORLD_SCALE,
+    -(y - 0.5) * WORLD_SCALE,
+    -z * WORLD_SCALE,
+  ];
 }
 
-export const InteractionContext = createContext<InteractionAPI | null>(null);
+function CursorIndicator() {
+  const meshRef = useRef<THREE.Mesh>(null);
 
-export function useInteractionAPI(): InteractionAPI {
-  const ctx = useContext(InteractionContext);
-  if (!ctx) throw new Error('useInteractionAPI must be used within InteractionScene');
-  return ctx;
-}
-
-function PhysicsInteractionInner() {
-  const {
-    processFrame,
-    registerObject,
-    removeObject,
-    objectCount,
-  } = useObjectInteraction();
-
-  const { registerBody, getBody } = usePhysics();
-  const { grab, moveGrabbed, release, isGrabbing } = useGrabPhysics();
-
-  const objectsRef = useRef<InteractiveObject3D[]>([]);
-
-  const handleRegister = useCallback(
-    (obj: InteractiveObject3D) => {
-      registerObject(obj);
-      objectsRef.current = [...objectsRef.current, obj];
-    },
-    [registerObject],
+  const material = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.5 }),
+    [],
   );
-
-  const handleRemove = useCallback(
-    (id: string) => {
-      removeObject(id);
-      objectsRef.current = objectsRef.current.filter((o) => o.id !== id);
-    },
-    [removeObject],
-  );
-
-  const { spawnCube, spawnSphere, spawnRandom } = useObjectSpawner(handleRegister);
-
-  const handleBodyReady = useCallback(
-    (id: string, body: RapierRigidBody) => {
-      registerBody(id, body);
-    },
-    [registerBody],
-  );
-
-  useEffect(() => {
-    const cubePositions: [number, number, number][] = [
-      [-2.5, 1, 0], [-1.5, 1, 0], [-0.5, 1, 0], [0.5, 1, 0], [1.5, 1, 0],
-      [-2, 2, 0], [-1, 2, 0], [0, 2, 0], [1, 2, 0],
-      [-1.5, 3, 0], [-0.5, 3, 0], [0.5, 3, 0],
-      [-1, 4, 0], [0, 4, 0],
-      [-0.5, 5, 0],
-      [2.5, 1, 0], [2.5, 2, 0], [2.5, 3, 0], [2.5, 4, 0], [2.5, 5, 0],
-    ];
-    for (const pos of cubePositions) {
-      spawnCube(pos);
-    }
-
-    const spherePositions: [number, number, number][] = [
-      [-3.5, 1, -1], [-2.5, 1, -1], [-1.5, 1, -1], [-0.5, 1, -1], [0.5, 1, -1],
-      [1.5, 1, -1], [2.5, 1, -1], [3.5, 1, -1],
-      [-3, 2, -1], [-2, 2, -1], [-1, 2, -1], [0, 2, -1],
-      [1, 2, -1], [2, 2, -1], [3, 2, -1],
-      [-2.5, 3, -1], [-1.5, 3, -1], [-0.5, 3, -1], [0.5, 3, -1], [1.5, 3, -1],
-    ];
-    for (const pos of spherePositions) {
-      spawnSphere(pos);
-    }
-  }, [spawnCube, spawnSphere]);
 
   useFrame(() => {
-    processFrame();
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    const pos = useInteractionStore.getState().cursorPosition;
+    const isGrabbed = useInteractionStore.getState().isGrabbed;
+
+    if (pos[0] === 0 && pos[1] === 0 && pos[2] === 0) {
+      mesh.visible = false;
+      return;
+    }
+
+    mesh.visible = true;
+    mesh.position.set(pos[0], pos[1], pos[2]);
+    material.color.setHex(isGrabbed ? 0x44dd88 : 0xffcc00);
+    material.opacity = isGrabbed ? 0.7 : 0.4;
+  });
+
+  return (
+    <mesh ref={meshRef} material={material}>
+      <sphereGeometry args={[0.04, 12, 12]} />
+    </mesh>
+  );
+}
+
+export function InteractionScene() {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const grabbedRef = useRef(false);
+  const offsetRef = useRef<[number, number, number]>([0, 0, 0]);
+  const positionRef = useRef<[number, number, number]>([0, 0, 0]);
+
+  const normalMaterial = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: 0x4488ff, roughness: 0.3, metalness: 0.1 }),
+    [],
+  );
+
+  const grabbedMaterial = useMemo(
+    () => new THREE.MeshStandardMaterial({
+      color: 0x44dd88,
+      emissive: 0x113322,
+      emissiveIntensity: 0.4,
+      roughness: 0.25,
+      metalness: 0.15,
+    }),
+    [],
+  );
+
+  useFrame(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
     const { hands } = useHandTrackingStore.getState();
     const { rightGesture, leftGesture } = useGestureStore.getState();
 
     const activeGesture = rightGesture.type !== GestureType.NONE ? rightGesture : leftGesture;
-    const activeHand = hands.find((h) => h.handedness === activeGesture.handedness);
+    const hand = hands.find((h) => h.handedness === activeGesture.handedness) ?? hands[0];
 
-    if (activeGesture.type === GestureType.PINCH && activeHand) {
-      const thumb = activeHand.landmarks[HandLandmark.THUMB_TIP];
-      const index = activeHand.landmarks[HandLandmark.INDEX_FINGER_TIP];
-      if (!thumb || !index) return;
-      const handPos: [number, number, number] = [
-        (thumb.x + index.x) / 2,
-        (thumb.y + index.y) / 2,
-        (thumb.z + index.z) / 2,
-      ];
-
-      if (activeGesture.state === GestureState.START && !isGrabbing()) {
-        const { selectedObjectId } = useInteractionStore.getState();
-        if (selectedObjectId) {
-          const body = getBody(selectedObjectId);
-          if (body) {
-            grab(selectedObjectId, body, handPos, activeHand.handedness);
-          }
-        }
-      } else if (
-        (activeGesture.state === GestureState.HOLD || activeGesture.state === GestureState.START) &&
-        isGrabbing()
-      ) {
-        moveGrabbed(handPos);
+    if (!hand) {
+      if (grabbedRef.current) {
+        grabbedRef.current = false;
+        mesh.material = normalMaterial;
+        useInteractionStore.getState().setGrabbed(false);
       }
-    } else if (isGrabbing()) {
-      release();
+      return;
     }
+
+    const thumb = hand.landmarks[HandLandmark.THUMB_TIP];
+    const index = hand.landmarks[HandLandmark.INDEX_FINGER_TIP];
+    if (!thumb || !index) return;
+
+    const pinchWorld = landmarkToWorld(
+      (thumb.x + index.x) / 2,
+      (thumb.y + index.y) / 2,
+      (thumb.z + index.z) / 2,
+    );
+
+    useInteractionStore.getState().setCursorPosition(pinchWorld);
+
+    const isPinching = activeGesture.type === GestureType.PINCH &&
+      (activeGesture.state === GestureState.START || activeGesture.state === GestureState.HOLD);
+
+    if (isPinching && !grabbedRef.current) {
+      const dx = pinchWorld[0] - positionRef.current[0];
+      const dy = pinchWorld[1] - positionRef.current[1];
+      const dist2D = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist2D < GRAB_DISTANCE) {
+        grabbedRef.current = true;
+        offsetRef.current = [
+          positionRef.current[0] - pinchWorld[0],
+          positionRef.current[1] - pinchWorld[1],
+          0,
+        ];
+        mesh.material = grabbedMaterial;
+        useInteractionStore.getState().setGrabbed(true);
+      }
+    }
+
+    if (!isPinching && grabbedRef.current) {
+      grabbedRef.current = false;
+      mesh.material = normalMaterial;
+      useInteractionStore.getState().setGrabbed(false);
+    }
+
+    if (grabbedRef.current) {
+      const targetX = pinchWorld[0] + offsetRef.current[0];
+      const targetY = pinchWorld[1] + offsetRef.current[1];
+
+      positionRef.current[0] += (targetX - positionRef.current[0]) * LERP_SPEED;
+      positionRef.current[1] += (targetY - positionRef.current[1]) * LERP_SPEED;
+    }
+
+    mesh.position.set(positionRef.current[0], positionRef.current[1], positionRef.current[2]);
   });
 
-  const cubes = useMemo(() => objectsRef.current.filter((o) => o.name === 'Cube'), [objectsRef.current]);
-  const spheres = useMemo(() => objectsRef.current.filter((o) => o.name === 'Sphere'), [objectsRef.current]);
-
-  const api: InteractionAPI = {
-    spawnCube,
-    spawnSphere,
-    spawnRandom,
-    removeObject: handleRemove,
-    objectCount,
-  };
-
   return (
-    <InteractionContext.Provider value={api}>
-      <PhysicsGround />
-      {cubes.map((obj) => (
-        <PhysicsCube key={obj.id} interactable={obj} onBodyReady={handleBodyReady} />
-      ))}
-      {spheres.map((obj) => (
-        <PhysicsSphere key={obj.id} interactable={obj} onBodyReady={handleBodyReady} />
-      ))}
-    </InteractionContext.Provider>
-  );
-}
-
-export function InteractionScene() {
-  const debugEnabled = usePhysicsStore((s) => s.debugEnabled);
-
-  return (
-    <Physics gravity={[0, -9.81, 0]} debug={debugEnabled} interpolate>
-      <PhysicsInteractionInner />
-    </Physics>
+    <>
+      <mesh ref={meshRef} position={[0, 0, 0]}>
+        <sphereGeometry args={[SPHERE_RADIUS, 32, 32]} />
+        <meshStandardMaterial color={0x4488ff} roughness={0.3} metalness={0.1} />
+      </mesh>
+      <CursorIndicator />
+    </>
   );
 }

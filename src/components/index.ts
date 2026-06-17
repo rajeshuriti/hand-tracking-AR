@@ -4,4 +4,3 @@ export { CameraFeed } from './CameraFeed';
 export { HandDebugView } from './HandDebugView';
 export { GestureDebugView } from './GestureDebugView';
 export { InteractionDebugView } from './InteractionDebugView';
-export { PhysicsDebugView } from './PhysicsDebugView';

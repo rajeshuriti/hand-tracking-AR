@@ -35,7 +35,7 @@ CameraEngine → HandTrackingService → GestureEngine → InteractionEngine →
 ### Separation of concerns
 
 - **Services/Engines** (`src/engines/`) are plain TypeScript classes — no React, no direct store writes. They publish results exclusively through EventBus.
-- **Stores** (`src/stores/`) are Zustand stores. Four stores: `handTrackingStore` (hand data, FPS, processing time), `gestureStore` (active gestures, history), `interactionStore` (hovered/selected object, interaction state, object count), `PhysicsStore` (active bodies, grabbed object, collisions, gravity). Hooks bridge engine output to stores.
+- **Stores** (`src/stores/`) are Zustand stores. Four stores: `handTrackingStore` (hand data, FPS, processing time), `gestureStore` (active gestures, history), `interactionStore` (hovered/selected/grabbed object, grab handedness, interaction state, cursor, grab velocity), `PhysicsStore` (active bodies, grabbed object, collisions, gravity). Hooks bridge engine output to stores.
 - **EventBus** (`src/services/EventBus.ts`) is a typed pub/sub. Event types are defined in `src/types/events.ts`.
 - **Hooks** (`src/hooks/`) bridge services to React. `useHandTracking` wires the tracking pipeline; `useGesture` provides gesture API; `useObjectInteraction` provides object interaction API; `usePhysics` / `useGrabPhysics` provide physics API.
 - **Components** (`src/components/`) are HTML-overlay UI (debug panel, camera feed, FPS monitor, hand debug, gesture debug, interaction debug, physics debug).
@@ -58,19 +58,21 @@ Services process frames and emit events. The `useHandTracking` hook listens to e
 | `src/engines/handTracking/HandTrackingService.ts` | MediaPipe HandLandmarker, hand gained/lost detection |
 | `src/engines/gestures/GestureEngine.ts` | Gesture state machine: frame-count debounce, START→HOLD transitions, history ring buffer |
 | `src/engines/gestures/recognizers.ts` | IGesture implementations (Pinch, OpenPalm, Fist, Point, Victory) with weighted confidence scoring |
-| `src/engines/gestures/math.ts` | Landmark geometry helpers: finger curl/extension, angles, distances |
+| `src/engines/gestures/math.ts` | Landmark geometry helpers: finger curl/extension, angles, distances, hand rotation (palm orientation → Euler) |
 | `src/engines/scene/HandVisualization.tsx` | R3F hand skeleton: zero-alloc useFrame loop, confidence opacity, tiered joint sizes |
 | `src/services/EventBus.ts` | Typed singleton event bus |
 | `src/hooks/useHandTracking.ts` | Full tracking API: start/stop, hands, fps, getHand(), getLandmark() |
 | `src/hooks/useGesture.ts` | Gesture API: leftGesture, rightGesture, history, isGestureActive() |
 | `src/stores/handTrackingStore.ts` | Hand data, FPS, processing time + getHand/getLandmark helpers |
 | `src/stores/gestureStore.ts` | Active gestures per hand, gesture history |
-| `src/stores/interactionStore.ts` | Hovered/selected object IDs, interaction state, cursor position |
-| `src/engines/interactions/interfaces/IInteractable.ts` | Contract for interactable objects (select, hover, move, destroy) |
+| `src/stores/interactionStore.ts` | Hovered/selected/grabbed object IDs, grab handedness, interaction state, cursor position, grab velocity |
+| `src/engines/interactions/interfaces/IInteractable.ts` | Contract for interactable objects with grab callbacks (onGrabStart/Update/End) and hover callbacks |
 | `src/engines/interactions/managers/ObjectManager.ts` | Object registry with spatial nearest-object search |
 | `src/engines/interactions/managers/SelectionManager.ts` | Single-selection state: hover, select, release |
-| `src/engines/interactions/controllers/HandInteractionController.ts` | Core: PINCH → find nearest → grab → move (lerp) → release |
-| `src/engines/interactions/components/InteractiveObject3D.ts` | IInteractable implementation with change callbacks |
+| `src/engines/interactions/managers/GrabManager.ts` | Grab lifecycle: position+rotation offsets, smoothing, velocity tracking, hand-to-hand transfer |
+| `src/engines/interactions/controllers/HandInteractionController.ts` | Core: PINCH → find nearest → GrabManager grab → move+rotate (lerp) → release; two-hand transfer |
+| `src/engines/interactions/components/InteractiveObject3D.ts` | IInteractable implementation with change, grab, and hover callbacks |
+| `src/engines/interactions/components/InteractionDebugVisualizer.tsx` | 3D debug: pinch lines, grab radius sphere, selected outline, gesture state label |
 | `src/engines/interactions/components/InteractiveCube.tsx` | R3F cube with hover glow, select highlight, useFrame movement |
 | `src/engines/interactions/components/InteractiveSphere.tsx` | R3F sphere with same visual feedback |
 | `src/engines/interactions/components/ObjectSpawner.tsx` | Renders InteractiveCube/Sphere; `useObjectSpawner` for spawn API |
@@ -123,25 +125,26 @@ IDLE → START → HOLD → END → IDLE
 
 ### IInteractable interface
 
-All interactive 3D objects implement `IInteractable { id, name, position, rotation, scale, isHovered, isSelected, isInteractable, select(), deselect(), hover(), unhover(), move(pos), destroy() }`. Includes future extension points: `physicsBodyId`, `ownerPlayerId`, `aiGenerated`.
+All interactive 3D objects implement `IInteractable { id, name, position, rotation, scale, isHovered, isSelected, isGrabbed, isInteractable, select(), deselect(), hover(), unhover(), move(pos), rotate(rot), destroy() }`. Optional grab callbacks: `onGrabStart(handedness)`, `onGrabUpdate(pos, rot)`, `onGrabEnd()`. Optional hover callbacks: `onHoverEnter()`, `onHoverExit()`. Extension points: `physicsBodyId`, `ownerPlayerId`, `aiGenerated`.
 
 ### Interaction lifecycle
 
 ```
 Hand visible → Cursor (pinch midpoint or index tip) → Find nearest object within maxDistance
   ↓
-PINCH_START → Select nearest → Grab (store offset)
+PINCH_START → Select nearest → GrabManager.grab() (store position + rotation offset)
   ↓
-PINCH_HOLD → Move object (lerp smoothing, grab offset preserved)
+PINCH_HOLD → GrabManager.updateGrab() (lerp position, lerp rotation, track velocity)
   ↓
-PINCH_END → Release object
+PINCH_END → GrabManager.release() → velocity data for throwing
 ```
 
 ### Managers
 
 - **ObjectManager**: Registry of all `IInteractable` objects. `getNearest(x,y,z,maxDist)` does linear scan (fast for 100s of objects). `register()` / `remove()` emit `interaction:object:created` / `interaction:object:destroyed`.
 - **SelectionManager**: Single-hovered + single-selected object state. Emits `interaction:object:hovered` / `unhovered` / `selected` / `released`. Auto-deselects previous before selecting new.
-- **HandInteractionController**: Reads gesture state + hand landmarks per frame, drives ObjectManager + SelectionManager. Smoothed cursor (EMA α=0.3), lerp movement (configurable `lerpSpeed`).
+- **GrabManager**: Dedicated grab lifecycle manager. Tracks position + rotation offsets, computes smoothed position (EMA α=0.35) and rotation (EMA α=0.25), records velocity history in ring buffer (8 samples, recency-weighted) for throw calculation. Supports hand-to-hand transfer via `transferToHand()`. Emits `interaction:grab:started` / `updated` / `ended` / `transferred`.
+- **HandInteractionController**: Reads gesture state + hand landmarks per frame, drives ObjectManager + SelectionManager + GrabManager. Smoothed cursor (EMA α=0.3), hand rotation via `computeHandRotation()`. Supports two-hand input: primary hand for grab, secondary hand for transfer.
 
 ### Visual feedback
 
@@ -164,6 +167,18 @@ PINCH_END → Release object
 | `interaction:object:moved` | `{ objectId, transform }` | Each frame during grab |
 | `interaction:object:created` | `{ objectId, type, position }` | Object registered |
 | `interaction:object:destroyed` | `{ objectId }` | Object removed |
+| `interaction:grab:started` | `{ objectId, handedness, position, rotation }` | GrabManager.grab() called |
+| `interaction:grab:updated` | `{ objectId, handedness, position, rotation, velocity }` | Each frame during grab |
+| `interaction:grab:ended` | `{ objectId, handedness, finalPosition, finalRotation, velocity, durationMs }` | GrabManager.release() called |
+| `interaction:grab:transferred` | `{ objectId, fromHand, toHand, position }` | Object transferred between hands |
+
+### 3D Debug Visualizer
+
+`<InteractionDebugVisualizer />` renders in-scene debug overlays when debug mode is active (Ctrl+Shift+D):
+- **Pinch lines**: Yellow line segments from thumb tip to index tip per hand
+- **Grab radius sphere**: Wireframe sphere at cursor position showing maxInteractionDistance, color-coded by state (blue=hover, red=grab)
+- **Selected object outline**: Rotating wireframe box outline at cursor for selected/grabbed objects
+- **Gesture state label**: 3D HTML label near wrist showing active gesture type/state and grabbed object ID
 
 ### Configuration
 

@@ -2,7 +2,6 @@ import { useAppStore } from '../stores/appStore';
 import { HandDebugView } from './HandDebugView';
 import { GestureDebugView } from './GestureDebugView';
 import { InteractionDebugView } from './InteractionDebugView';
-import { PhysicsDebugView } from './PhysicsDebugView';
 
 const styles = {
   container: {
@@ -86,13 +85,8 @@ export function DebugOverlay() {
       </div>
 
       <div style={styles.section}>
-        <div style={styles.sectionTitle}>Interactions</div>
+        <div style={styles.sectionTitle}>Interaction</div>
         <InteractionDebugView />
-      </div>
-
-      <div style={styles.section}>
-        <div style={styles.sectionTitle}>Physics</div>
-        <PhysicsDebugView />
       </div>
     </div>
   );

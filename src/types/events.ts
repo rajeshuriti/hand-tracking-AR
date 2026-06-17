@@ -8,6 +8,10 @@ import type {
   ObjectMovedPayload,
   ObjectCreatedPayload,
   ObjectDestroyedPayload,
+  GrabStartedPayload,
+  GrabUpdatedPayload,
+  GrabEndedPayload,
+  GrabTransferredPayload,
 } from '../engines/interactions/events/InteractionEvents';
 import type {
   BodyRegisteredPayload,
@@ -45,6 +49,11 @@ export interface EventMap {
   'interaction:object:moved': ObjectMovedPayload;
   'interaction:object:created': ObjectCreatedPayload;
   'interaction:object:destroyed': ObjectDestroyedPayload;
+
+  'interaction:grab:started': GrabStartedPayload;
+  'interaction:grab:updated': GrabUpdatedPayload;
+  'interaction:grab:ended': GrabEndedPayload;
+  'interaction:grab:transferred': GrabTransferredPayload;
 
   'physics:body:registered': BodyRegisteredPayload;
   'physics:body:removed': BodyRemovedPayload;
